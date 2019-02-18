@@ -37,7 +37,7 @@ doc_idx = 0
 for iterator in documents:
 	doc_id = iterator[0]
 	doc_content = iterator[1]
-	DOCS_IDX[doc_idx] = doc_content
+	DOCS_IDX[doc_idx] = [STEMMER.stem(t) for t in nltk.word_tokenize(doc_content) if t not in STOPWORDS]
 	tf_doc = dict()
 	for token in [t for t in nltk.word_tokenize(doc_content)]:
 		if token in STOPWORDS:
