@@ -43,23 +43,25 @@ def process_document(document):
 	return [stemmer.stem(t) for t in nltk.word_tokenize(document) if t.lower() not in stop_words]
 
 
+
 def cosine_sim(index_reader, document, query, doc_id, N):
-	global flag
 	dot_prod = 0
 	norm_q = 0
 	norm_d = 0
-	for term in set(query):
+	for term in query:
 		if term in index_reader and doc_id in index_reader[term]:
 			idf = log10(N / index_reader[term]["df"])
-			dot_prod += (index_reader[term][doc_id]["tf"] * idf)
-			# if str(doc_id) == str(257) and flag:
-			# 	print(term, idf, dot_prod)
-		norm_q += 1 if index_reader.get(term) != None else 0
+			tf = index_reader[term][doc_id]["tf"]
+			dot_prod += (query[term] * tf * idf)
+		norm_q += query[term] ** 2 if index_reader.get(term) != None else 0
 	for term in set(document):
-		norm_d +=  (index_reader[term][doc_id]["tf"] ** 2 )
+		idf = log10(N / index_reader[term]["df"])
+		tf = index_reader[term][doc_id]["tf"]
+		w_id = tf * idf
+		norm_d += (w_id ** 2)
 	return dot_prod / sqrt(norm_d * norm_q)
 
-def search(index_reader, query):
+def search(index_reader, query, limit=100):
 	ans = []
 	documents = get_dict_from_json("docs_info.json")
 	N = len(documents)
@@ -72,42 +74,94 @@ def search(index_reader, query):
 		if sim > 0:
 			ans.append((sim, int(doc_id) + 1))
 	print("Tiempo en realizar la consulta {} ". format(time.time() - t1))
-	return sorted(ans, reverse=True)
+	ans = sorted(ans, reverse=True)
+	ans = ans[:100] if len(ans) > 100 else ans
+	return ans
 
 def evaluator(results, query_idx):
 	precision = recall = retrieved_docs = 0
 	relevant_documents = len(qrel.get(query_idx))
 	retrieved_and_relevant_docs = 0
+	precision_list = []
+	relevant_boolean_list = []
 	for r in results:
 		doc_id = r[1]
 		score = r[0]
 		retrieved_docs += 1
 		if doc_id in qrel[query_idx]:
 			retrieved_and_relevant_docs += 1
+			relevant_boolean_list.append(1)
+		else:
+			relevant_boolean_list.append(0)
 		precision = retrieved_and_relevant_docs / retrieved_docs
+		precision_list.append(precision)
 		recall = retrieved_and_relevant_docs / relevant_documents
-		results[retrieved_docs - 1] += (recall, precision) 
+		ap = 0
+		for p_i, rel_i in zip(precision_list, relevant_boolean_list):
+			ap += p_i * rel_i
+		ap /= relevant_documents
+		results[retrieved_docs - 1] += (recall, precision, ap) 
 	return results
 
-def save_html(results, queries, html_filename='index.html'):
-	begin_html = '<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>table{border-collapse: collapse; font-family: "Trebuchet MS", Arial, Helvetica, sans-serif; width: 50%; margin: 0px auto;}h2{font-family: "Trebuchet MS", Arial, Helvetica, sans-serif;}th, td{text-align: left; padding: 8px; border: 1px solid #ddd;}tr:nth-child(even){background-color: #f2f2f2;}tr:hover{background-color: #ddd;}th{padding-top: 12px; padding-bottom: 12px; text-align: left; background-color: #4CAF50; color: white;}</style></head><body>'
+def save_html(results, queries, html_filename='index.html', table_color='#4CAF50'):
+	begin_html = '<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>table{{border-collapse: collapse; font-family: "Trebuchet MS", Arial, Helvetica, sans-serif; width: 50%; margin: 0px auto;}}h2{{font-family: "Trebuchet MS", Arial, Helvetica, sans-serif;}}th, td{{text-align: left; padding: 8px; border: 1px solid #ddd;}}tr:nth-child(even){{background-color: #f2f2f2;}}tr:hover{{background-color: #ddd;}}th{{padding-top: 12px; padding-bottom: 12px; text-align: left; background-color: {}; color: white;}}</style></head><body>'.format(table_color)
 	end_html = '</body></html>'
 	with open(html_filename, 'w') as f:
 		f.write(begin_html)
 		query_res_idx = 0
 		for q in queries:
 			f.write('<h2>{}:{}</h2>'.format(q[0], q[1]))
-			f.write('<div style="overflow-x:auto;"> <table> <tr> <th>ID</th> <th>Document</th> <th>Cosine Sim</th> <th>Recall</th> <th>Precision</th> </tr>')
+			f.write('<div style="overflow-x:auto;"> <table> <tr> <th>ID</th> <th>Document</th> <th>Cosine Sim</th> <th>Recall</th> <th>Precision</th> <th>AP</th> </tr>')
 			counter = 1
 			for i in results[query_res_idx]:
 				flag = 'style="font-weight:bold"' if i[1] in qrel[query_res_idx + 1] else ""
-				f.write('<tr {}><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>'.format(flag, counter, i[1], i[0], i[2], i[3]))
+				f.write('<tr {}><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>'.format(flag, counter, i[1], i[0], i[2], i[3], i[4]))
 				counter += 1
 			f.write('</table></div>')
 			query_res_idx += 1
 		f.write(end_html)
+def create_sum_of_doc_vector_with_dicts(index_reader, documents, docs_ids):
+	doc_sum = {}
+	N = len(documents)
+	for doc_id in docs_ids:
+		document_content = documents[doc_id]
+		for term in document_content:
+			idf = log10(N / index_reader[term]["df"])
+			tf = index_reader[term][doc_id]["tf"]
+			if term in doc_sum:
+				doc_sum[term] += (idf * tf)
+			else:
+				doc_sum[term] = idf * tf
+	return doc_sum
+def scalar_times_dict(scalar, vector_as_dict):
+	for key in vector_as_dict:
+		vector_as_dict[key] *= scalar
 
-def main():
+def vector_dict_add(dict_a, dict_b):
+	set_of_terms = set(dict_a).union(set(dict_b))
+	ans = {}
+	for term in set_of_terms:
+		a_i = dict_a.get(term, 0)
+		b_i = dict_b.get(term, 0)
+		ans[term] = a_i + b_i
+	return ans
+def build_query_using_rocchio(index_reader, query, number_of_relevant_docs, alpha=1, beta=0.8, gamma=0.1):
+	documents = get_dict_from_json("docs_info.json")
+	results = search(index_reader, query)
+	number_of_relevant_docs = number_of_relevant_docs if number_of_relevant_docs < len(results) else len(results)
+	relevant_documents = [str(results[i][1] - 1) for i in range(number_of_relevant_docs)]
+	non_relevant_docs = [str(results[i][1] - 1) for i in range(number_of_relevant_docs, len(results))]
+	vector_original_query = { term : alpha for term in set(query)}
+	sum_of_relevant_docs = create_sum_of_doc_vector_with_dicts(index_reader, documents, relevant_documents)
+	sum_of_non_relevant_docs = create_sum_of_doc_vector_with_dicts(index_reader, documents, non_relevant_docs)
+	scalar_times_dict(beta / number_of_relevant_docs, sum_of_relevant_docs)
+	number_of_non_relevant_docs = len(results) - number_of_relevant_docs
+	scalar_times_dict(- gamma / number_of_non_relevant_docs, sum_of_non_relevant_docs)
+	modified_query = vector_dict_add(vector_original_query, sum_of_relevant_docs)
+	modified_query = vector_dict_add(modified_query, sum_of_non_relevant_docs)
+	return modified_query
+
+def solution_task2():
 	queries = get_list_of_queries()
 	index_reader = get_dict_from_json()
 	all_results = []
@@ -115,12 +169,28 @@ def main():
 	for q in queries:
 		query_content = q[1]
 		query_content = process_document(query_content)
+		query_content = { term : 1 for term in set(query_content)}
 		results = search(index_reader, query_content)
 		results = evaluator(results, index_q)
 		index_q += 1
 		all_results.append(results)
-	save_html(all_results, queries)
+	save_html(all_results, queries, "no_query_expansion.html")
 
+def solution_task3():
+	queries = get_list_of_queries()
+	index_reader = get_dict_from_json()
+	all_results = []
+	index_q = 1
+	for q in queries:
+		query_content = process_document(q[1])
+		query_content = { term : 1 for term in set(query_content)}
+		modified_query = build_query_using_rocchio(index_reader, query_content, 3)
+		results = search(index_reader, modified_query)
+		results = evaluator(results, index_q)
+		index_q += 1
+		all_results.append(results)
+	save_html(all_results, queries, "query_expansion_using_rocchio.html", '#69aa96')
 
 if __name__ == '__main__':
-	main()
+	solution_task2()
+	solution_task3()
